@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dictado por voz · La Tartine</title>
+<style>
+:root{--primary:#7a3e2e;--light:#f8f4ef;--border:#ddd3ca}
+*{box-sizing:border-box}
+body{margin:0;padding:22px;font-family:Arial,Helvetica,sans-serif;background:#f3f1ee;color:#2f2723}
+main{max-width:520px;margin:auto;background:#fff;padding:22px;border-radius:14px;box-shadow:0 3px 14px #0002}
+h1{font-size:22px;color:var(--primary);margin:0 0 8px}
+p{line-height:1.45}
+button{border:0;border-radius:8px;padding:13px 17px;font-weight:bold;cursor:pointer;margin:5px 5px 5px 0}
+.primary{background:var(--primary);color:white}.secondary{background:#eee7e0;color:#2f2723}
+button:disabled{opacity:.5;cursor:not-allowed}
+#status{background:#fbf7f3;border:1px solid var(--border);border-radius:9px;padding:12px;min-height:70px}
+.note{font-size:13px;color:#66564d}
+</style>
+</head>
+<body>
+<main>
+  <h1>La Tartine · Dictado por voz</h1>
+  <p>Esta ventana escucha tu voz y envía las frases reconocidas al Control de Salidas.</p>
+  <button class="primary" id="start">Activar micrófono</button>
+  <button class="secondary" id="stop" disabled>Detener dictado</button>
+  <p id="status" role="status">Listo. Pulsa “Activar micrófono” para comenzar.</p>
+  <p class="note">Mantén esta ventana abierta mientras dictas. Puedes decir varios movimientos: “Baguette, Zona, 15 piezas”.</p>
+</main>
+<script>
+(()=>{
+  const params=new URLSearchParams(location.search);
+  const token=params.get('token') || '';
+  const lang=params.get('lang') || 'es-MX';
+  const status=document.getElementById('status');
+  const startBtn=document.getElementById('start');
+  const stopBtn=document.getElementById('stop');
+  const Recognition=window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recognition=null, active=false, restarting=false;
+
+  function send(type, extra={}){
+    if(window.opener && !window.opener.closed){
+      window.opener.postMessage({type,token,...extra}, '*');
+    }
+  }
+  function show(message){status.textContent=message;}
+  function setActive(value){
+    active=value;
+    startBtn.disabled=value;
+    stopBtn.disabled=!value;
+  }
+
+  async function start(){
+    if(!token){show('Falta el identificador de sesión. Cierra esta ventana e inicia el dictado desde La Tartine.');return;}
+    if(!Recognition){show('Este navegador no ofrece reconocimiento de voz. Usa Google Chrome actualizado.');return;}
+    try{
+      // Solicita permiso explícito en este origen independiente.
+      const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+      stream.getTracks().forEach(track=>track.stop());
+
+      recognition=new Recognition();
+      recognition.lang=lang;
+      recognition.continuous=true;
+      recognition.interimResults=false;
+      recognition.maxAlternatives=1;
+
+      recognition.onstart=()=>{
+        restarting=false;
+        setActive(true);
+        show('Micrófono activo. Escuchando…');
+        send('VOICE_STARTED');
+      };
+      recognition.onresult=(event)=>{
+        for(let i=event.resultIndex;i<event.results.length;i++){
+          if(event.results[i].isFinal){
+            const transcript=event.results[i][0].transcript.trim();
+            if(transcript){
+              show('Reconocido: '+transcript);
+              send('VOICE_RESULT',{transcript});
+            }
+          }
+        }
+      };
+      recognition.onerror=(event)=>{
+        if(event.error==='no-speech') return;
+        active=false;
+        setActive(false);
+        const messages={
+          'not-allowed':'Permiso de micrófono denegado para esta página.',
+          'service-not-allowed':'El servicio de reconocimiento de voz fue bloqueado.',
+          'audio-capture':'No se encontró un micrófono disponible.',
+          'network':'El reconocimiento de voz requiere conexión a Internet.',
+          'language-not-supported':'El navegador no admite el idioma solicitado.'
+        };
+        const message=messages[event.error] || ('Error de reconocimiento: '+event.error);
+        show(message);
+        send('VOICE_ERROR',{message});
+      };
+      recognition.onend=()=>{
+        if(active && !restarting){
+          restarting=true;
+          try{recognition.start();}catch(e){restarting=false;active=false;setActive(false);show('El reconocimiento se detuvo. Vuelve a activarlo.');send('VOICE_ERROR',{message:'El reconocimiento se detuvo inesperadamente.'});}
+        }else if(!active){
+          setActive(false);
+          send('VOICE_STOPPED');
+        }
+      };
+      recognition.start();
+    }catch(error){
+      setActive(false);
+      const message=error && error.name==='NotAllowedError'
+        ? 'Chrome no concedió acceso al micrófono. Permítelo para este sitio en el candado de la barra de direcciones.'
+        : ('No se pudo activar el micrófono: '+(error.message || error));
+      show(message);
+      send('VOICE_ERROR',{message});
+    }
+  }
+
+  function stop(){
+    active=false;
+    restarting=false;
+    if(recognition){try{recognition.stop();}catch(e){}}
+    setActive(false);
+    show('Dictado detenido. Puedes cerrar esta ventana o volver a activarlo.');
+    send('VOICE_STOPPED');
+  }
+
+  startBtn.addEventListener('click',start);
+  stopBtn.addEventListener('click',stop);
+  window.addEventListener('message',(event)=>{
+    const data=event.data || {};
+    if(data.type==='VOICE_STOP' && data.token===token) stop();
+  });
+  window.addEventListener('beforeunload',()=>{active=false;try{recognition && recognition.stop();}catch(e){}});
+  send('VOICE_READY');
+})();
+</script>
+</body>
+</html>
